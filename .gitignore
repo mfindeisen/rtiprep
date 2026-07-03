@@ -1,0 +1,12 @@
+# Compiled binaries and executables
+rtiprep.exe
+rtiprep
+rtiprep.test
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test coverage files
+*.out
