@@ -8,6 +8,7 @@ import (
 	"image"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 	"rtiprep/rti"
 
@@ -60,14 +61,23 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 		hTemp = (hTemp + 1) / 2
 	}
 
-	// Generate and compress tiles for all levels in memory (Pass 1)
+	// Generate and compress tiles for all levels, writing them to a temp file on disk (Pass 1)
+	tempTilesFile, err := os.CreateTemp("", "rtiprep-tiles-*.bin")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		tempTilesFile.Close()
+		os.Remove(tempTilesFile.Name())
+	}()
+
 	type levelTiles struct {
-		tiles           [][]byte
+		tileSizes       []uint32
 		offsetsRelative []uint32
 	}
 
 	levels := make([]levelTiles, nLevels)
-	var tilesBuffer bytes.Buffer
+	var totalTempBytes uint32 = 0
 
 	for l := 0; l < nLevels; l++ {
 		lw, lh := levelWidths[l], levelHeights[l]
@@ -99,11 +109,17 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 			}
 		}
 
-		// Compress tiles in parallel
+		// Compress tiles in parallel with limited concurrency
 		compressedTiles := make([][]byte, numTiles)
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		var lastErr error
+
+		limit := runtime.NumCPU()
+		if limit < 1 {
+			limit = 1
+		}
+		sem := make(chan struct{}, limit)
 
 		for ty := 0; ty < tilesY; ty++ {
 			for tx := 0; tx < tilesX; tx++ {
@@ -111,6 +127,9 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 				wg.Add(1)
 				go func(tx, ty, idx int) {
 					defer wg.Done()
+					sem <- struct{}{}
+					defer func() { <-sem }()
+
 					tileData := getTileData(levelLayers, tx, ty, lw, lh, numChannels, img.Type())
 					compressed, err := compressZlib(tileData)
 					if err != nil {
@@ -128,17 +147,25 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 			return lastErr
 		}
 
-		// Write to temp tiles buffer and track relative offsets
+		// Write to temp tiles file and track relative offsets
 		offsetsRel := make([]uint32, numTiles)
+		sizes := make([]uint32, numTiles)
 		for idx, tileBytes := range compressedTiles {
-			offsetsRel[idx] = uint32(tilesBuffer.Len())
-			tilesBuffer.Write(tileBytes)
+			offsetsRel[idx] = totalTempBytes
+			sizes[idx] = uint32(len(tileBytes))
+			if _, err := tempTilesFile.Write(tileBytes); err != nil {
+				return err
+			}
+			totalTempBytes += uint32(len(tileBytes))
 		}
 
 		levels[l] = levelTiles{
-			tiles:           compressedTiles,
+			tileSizes:       sizes,
 			offsetsRelative: offsetsRel,
 		}
+
+		// Force garbage collection of temporary resized image layers and zlib buffers
+		runtime.GC()
 	}
 
 	// Serialize bias and scale into JSON metadata for the ImageDescription tag
@@ -182,7 +209,7 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 		imageDescOffsets[l] = align4(currentOffset)
 		currentOffset = imageDescOffsets[l] + uint32(len(metaStr))
 
-		numTiles := uint32(len(levels[l].tiles))
+		numTiles := uint32(len(levels[l].tileSizes))
 
 		// TileOffsets values (numTiles * 4 bytes)
 		tileOffsetsOffsets[l] = align4(currentOffset)
@@ -213,7 +240,7 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 	// Write IFDs and their metadata values
 	for l := 0; l < nLevels; l++ {
 		lw, lh := levelWidths[l], levelHeights[l]
-		numTiles := len(levels[l].tiles)
+		numTiles := len(levels[l].tileSizes)
 
 		// 1. Write the IFD tag list (sorted by tag ID)
 		// Number of tags: 13
@@ -266,7 +293,7 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 		// TileByteCounts (325): points to array of longs (or direct value if 1 tile)
 		tileByteCountVal := tileByteCountsOffsets[l]
 		if numTiles == 1 {
-			tileByteCountVal = uint32(len(levels[l].tiles[0]))
+			tileByteCountVal = levels[l].tileSizes[0]
 		}
 		writeTag(outFile, 325, 4, uint32(numTiles), tileByteCountVal)
 
@@ -295,14 +322,17 @@ func WritePyramidalTiff(img rti.MultiLayerImage, destFile string, weightsJson st
 
 		// 4. Write TileByteCounts array values
 		seekToOffset(outFile, tileByteCountsOffsets[l])
-		for _, tile := range levels[l].tiles {
-			binary.Write(outFile, binary.LittleEndian, uint32(len(tile)))
+		for _, size := range levels[l].tileSizes {
+			binary.Write(outFile, binary.LittleEndian, size)
 		}
 	}
 
 	// 5. Append all compressed tile pixel data
 	seekToOffset(outFile, tilesStartOffset)
-	if _, err := io.Copy(outFile, &tilesBuffer); err != nil {
+	if _, err := tempTilesFile.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := io.Copy(outFile, tempTilesFile); err != nil {
 		return err
 	}
 
