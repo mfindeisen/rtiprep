@@ -18,6 +18,7 @@ func main() {
 	outputDir := flag.String("o", "", "Output destination folder/file (defaults to input name without extension or with .tif)")
 	tiffMode := flag.Bool("tiff", false, "Save output as a single tiled pyramidal TIFF file instead of a folder of images")
 	weightsFile := flag.String("weights", "", "Path to Neural RTI decoder weights JSON file (for GeoTIFF embedding)")
+	legacyMode := flag.Bool("legacy", false, "Generate legacy info.xml manifest in addition to info.json")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] <input_file>\n", os.Args[0])
@@ -116,6 +117,21 @@ func main() {
 			fmt.Printf("Error writing pyramidal TIFF: %v\n", err)
 			os.Exit(1)
 		}
+
+		// Save a preview thumbnail image next to the .tif file
+		thumbPath := destFolder
+		if strings.HasSuffix(strings.ToLower(thumbPath), ".tif") {
+			thumbPath = thumbPath[:len(thumbPath)-4] + ".jpg"
+		} else if strings.HasSuffix(strings.ToLower(thumbPath), ".tiff") {
+			thumbPath = thumbPath[:len(thumbPath)-5] + ".jpg"
+		} else {
+			thumbPath = thumbPath + ".jpg"
+		}
+
+		fmt.Println("Generating preview thumbnail...")
+		if err := splitter.SaveThumbnail(img, thumbPath); err != nil {
+			fmt.Printf("Warning: Failed to write preview thumbnail: %v\n", err)
+		}
 	} else {
 		s := splitter.NewSplitter(img, *tileSize)
 		fmt.Printf("Pyramid:    %d levels (max size %dx%d)\n", s.NumLevels(), s.MaxSize(), s.MaxSize())
@@ -130,6 +146,14 @@ func main() {
 		if err := s.SaveDescriptor(destFolder, format); err != nil {
 			fmt.Printf("Error writing descriptor: %v\n", err)
 			os.Exit(1)
+		}
+
+		if *legacyMode {
+			fmt.Println("Writing legacy XML descriptor...")
+			if err := s.SaveLegacyDescriptor(destFolder, format); err != nil {
+				fmt.Printf("Error writing legacy descriptor: %v\n", err)
+				os.Exit(1)
+			}
 		}
 	}
 
