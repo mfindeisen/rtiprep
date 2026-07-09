@@ -2,7 +2,6 @@ package splitter
 
 import (
 	"image/jpeg"
-	"image/png"
 	"os"
 	"path/filepath"
 	"sync"
@@ -164,11 +163,7 @@ func (s *Splitter) splitLayer(layerIdx int, destFolder string, quality int, form
 			return err
 		}
 
-		if format == "png" {
-			err = png.Encode(outFile, resized)
-		} else {
-			err = jpeg.Encode(outFile, resized, &jpeg.Options{Quality: quality})
-		}
+		err = EncodeTileImage(outFile, resized, format, quality)
 		outFile.Close()
 		if err != nil {
 			return err

@@ -14,11 +14,13 @@ import (
 func main() {
 	quality := flag.Int("q", 90, "Quality of saved tiles (default: 90)")
 	tileSize := flag.Int("t", 256, "Size of the tile (default: 256)")
-	pngFormat := flag.Bool("p", false, "Save output tiles as PNG instead of JPEG")
+	pngFormat := flag.Bool("p", false, "Save output tiles as PNG instead of JPEG (deprecated, use -format)")
+	formatFlag := flag.String("format", "", "Output tile image format: jpg, png, or webp (default: jpg)")
 	outputDir := flag.String("o", "", "Output destination folder/file (defaults to input name without extension or with .tif)")
 	tiffMode := flag.Bool("tiff", false, "Save output as a single tiled pyramidal TIFF file instead of a folder of images")
 	weightsFile := flag.String("weights", "", "Path to Neural RTI decoder weights JSON file (for GeoTIFF embedding)")
 	legacyMode := flag.Bool("legacy", false, "Generate legacy info.xml manifest in addition to info.json")
+	openlimeMode := flag.Bool("openlime", false, "Generate native OpenLIME DeepZoom export in an openlime/ subfolder")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] <input_file>\n", os.Args[0])
@@ -68,6 +70,13 @@ func main() {
 	format := "jpg"
 	if *pngFormat {
 		format = "png"
+	}
+	if *formatFlag != "" {
+		format = splitter.NormalizeTileFormat(*formatFlag)
+		if format != "jpg" && format != "png" && format != "webp" {
+			fmt.Printf("Error: Unsupported output format '%s'. Use jpg, png, or webp.\n", *formatFlag)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Printf("Processing: %s\n", filename)
@@ -152,6 +161,14 @@ func main() {
 			fmt.Println("Writing legacy XML descriptor...")
 			if err := s.SaveLegacyDescriptor(destFolder, format); err != nil {
 				fmt.Printf("Error writing legacy descriptor: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		if *openlimeMode {
+			fmt.Println("Writing OpenLIME export...")
+			if err := s.SaveOpenLime(destFolder, format); err != nil {
+				fmt.Printf("Error writing OpenLIME export: %v\n", err)
 				os.Exit(1)
 			}
 		}

@@ -18,6 +18,9 @@ type Node struct {
 	ID           int     `json:"id"`           // 1-based node index
 	Parent       int     `json:"parent"`       // 0-based parent index, -1 for root
 	Children     []int   `json:"children"`     // 0-based indices of child nodes, -1 for leaf
+	Level        int     `json:"level"`        // pyramid level (0 = coarsest)
+	GridX        int     `json:"gridX"`        // tile column at this level
+	GridY        int     `json:"gridY"`        // tile row at this level (0 = top)
 	ImgBox       image.Rectangle `json:"-"`    // Virtual image bounding box (unpadded, in S x S space)
 	PaddedImgBox image.Rectangle `json:"-"`    // Virtual image bounding box (padded with neighbor border)
 	NormalizeBox RectF           `json:"normalizeBox"`
@@ -81,6 +84,9 @@ func (t *Tree) makeNode(idx int, parentIdx int, level int, gx int, gy int) {
 	node.ID = idx + 1
 	node.Parent = parentIdx
 	node.Children = []int{-1, -1, -1, -1}
+	node.Level = level
+	node.GridX = gx
+	node.GridY = gy
 
 	// Unpadded box size at this level
 	sz := t.MaxSize >> level
